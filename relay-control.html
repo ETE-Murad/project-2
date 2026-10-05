@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay Control</title>
+<style>
+  :root {
+    --ink:#14181c; --panel:#1d2329; --line:#2c353d; --text:#e6ebef; --muted:#8a97a3;
+    --live:#5eead4; --off:#3a4651; --warn:#fca5a5;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px 16px 40px; background:var(--ink); color:var(--text);
+         font-family:"Segoe UI", system-ui, sans-serif; line-height:1.4; }
+  main { max-width:760px; margin:0 auto; }
+  h1 { font-size:1.5rem; margin:0; font-weight:650; }
+  #status { color:var(--muted); font-size:.9rem; margin:4px 0 24px; }
+  #status.ok::before { content:""; display:inline-block; width:8px; height:8px; margin-right:8px;
+                       border-radius:50%; background:var(--live); }
+  h2 { font-size:1.05rem; margin:28px 0 12px; font-weight:600; }
+  .readings { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+              border:1px solid var(--line); border-radius:10px; background:var(--panel); }
+  .reading { padding:16px; border-right:1px solid var(--line); }
+  .reading:last-child { border-right:0; }
+  .reading .name { color:var(--muted); font-size:.85rem; }
+  .reading .num { font-size:2rem; font-weight:650; font-variant-numeric:tabular-nums; margin-top:2px; }
+  .reading .unit { font-size:.95rem; color:var(--muted); font-weight:400; margin-left:2px; }
+  .relays { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; }
+  button.relay { display:flex; justify-content:space-between; align-items:center; width:100%;
+                 padding:14px 16px; border-radius:10px; border:1px solid var(--line);
+                 background:var(--panel); color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+  button.relay:focus-visible { outline:2px solid var(--live); outline-offset:2px; }
+  button.relay .state { display:block; color:var(--muted); font-size:.85rem; }
+  button.relay.on { border-color:var(--live); }
+  button.relay.on .state { color:var(--live); }
+  .switch { width:44px; height:24px; border-radius:12px; background:var(--off); position:relative; flex:none; }
+  .switch::after { content:""; position:absolute; top:3px; left:3px; width:18px; height:18px;
+                   border-radius:50%; background:#fff; transition:left .15s; }
+  button.relay.on .switch { background:var(--live); }
+  button.relay.on .switch::after { left:23px; }
+  #error { color:var(--warn); margin-top:16px; font-size:.9rem; min-height:1.2em; }
+  @media (prefers-reduced-motion:reduce) { .switch::after { transition:none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Relay Control</h1>
+  <div id="status">Connecting to Firebase…</div>
+
+  <h2>Live readings</h2>
+  <div class="readings">
+    <div class="reading"><div class="name">Temperature</div><div class="num"><span id="temp">--</span><span class="unit">°C</span></div></div>
+    <div class="reading"><div class="name">Voltage</div><div class="num"><span id="volt">--</span><span class="unit">V</span></div></div>
+    <div class="reading"><div class="name">Current</div><div class="num"><span id="curr">--</span><span class="unit">A</span></div></div>
+    <div class="reading"><div class="name">Power</div><div class="num"><span id="pow">--</span><span class="unit">W</span></div></div>
+  </div>
+
+  <h2>Relays</h2>
+  <div class="relays" id="relays"></div>
+  <div id="error" role="alert"></div>
+  <p style="margin-top:28px"><a href="dashboard.html" style="color:var(--muted)">Back to dashboard</a></p>
+</main>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+// >>> Paste your apiKey here (starts with AIza) <<<
+const firebaseConfig = {
+  apiKey: "AIzaSyBScis-XFP3HauZGljn143fKhmv6tR8FtE",
+  authDomain: "home-automation-8354f.firebaseapp.com",
+  databaseURL: "https://home-automation-8354f-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "home-automation-8354f",
+  messagingSenderId: "760848692283",
+  appId: "1:760848692283:web:312822f5ffcbdbf98bd81e"
+};
+
+const $ = id => document.getElementById(id);
+const showError = msg => { $("error").textContent = msg; };
+const fmt = (v, d) => (typeof v === "number" && isFinite(v)) ? v.toFixed(d) : "--";
+
+const app = initializeApp(firebaseConfig);
+
+try {
+  const auth = getAuth(app);
+  // Reuse the person already logged in on this site; otherwise sign in anonymously
+  const user = await new Promise(resolve => {
+    const stop = onAuthStateChanged(auth, u => { stop(); resolve(u); });
+  });
+  if (!user) await signInAnonymously(auth);
+  $("status").textContent = "Connected to Firebase";
+  $("status").classList.add("ok");
+} catch (e) {
+  $("status").textContent = "Could not sign in";
+  showError("Sign-in failed: " + e.message + " (check that Anonymous sign-in is enabled and the apiKey is correct)");
+}
+
+const db = getDatabase(app);
+const relayState = {};
+const box = $("relays");
+
+for (let i = 1; i <= 8; i++) {
+  const b = document.createElement("button");
+  b.className = "relay";
+  b.id = "relay" + i;
+  b.innerHTML = `<span><strong>Relay ${i}</strong><span class="state" id="state${i}">Off</span></span><span class="switch"></span>`;
+  b.addEventListener("click", () => {
+    showError("");
+    set(ref(db, "relays/relay" + i), !relayState[i])
+      .catch(e => showError("Could not change Relay " + i + ": " + e.message));
+  });
+  box.appendChild(b);
+}
+
+onValue(ref(db, "relays"), snap => {
+  const d = snap.val() || {};
+  for (let i = 1; i <= 8; i++) {
+    const on = d["relay" + i] === true;
+    relayState[i] = on;
+    $("relay" + i).classList.toggle("on", on);
+    $("state" + i).textContent = on ? "On" : "Off";
+  }
+}, e => showError("Could not read relays: " + e.message));
+
+onValue(ref(db, "sensors"), snap => {
+  const d = snap.val() || {};
+  $("temp").textContent = fmt(d.temperature, 1);
+  $("volt").textContent = fmt(d.voltage, 1);
+  $("curr").textContent = fmt(d.current, 3);
+  $("pow").textContent  = fmt(d.power, 1);
+}, e => showError("Could not read sensors: " + e.message));
+</script>
+</body>
+</html>
